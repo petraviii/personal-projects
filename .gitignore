@@ -1,0 +1,11 @@
+# Deny-all-then-allow-list: this repo only ever tracks explicitly
+# allow-listed personal-project subfolders. Everything else here
+# (other untouched project folders) stays out by default.
+*
+
+!/paper-trading-ml/
+!/paper-trading-ml/**
+
+!/.gitignore
+!/.github/
+!/.github/**
