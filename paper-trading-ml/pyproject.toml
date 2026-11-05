@@ -1,0 +1,24 @@
+[project]
+name = "papertrader"
+version = "0.1.0"
+description = "Paper trading engine with ML-based price-direction signals"
+requires-python = ">=3.12"
+dependencies = [
+    "yfinance>=0.2.40",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "scikit-learn>=1.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
