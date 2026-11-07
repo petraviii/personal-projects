@@ -23,9 +23,9 @@ flowchart LR
 ## Status
 
 Full pipeline is in place: data fetch, feature engineering, labeling, a
-walk-forward-evaluated baseline classifier, and a backtest engine, wired
-up end-to-end through the CLI. Model comparison/tuning and a news-sentiment
-feature are tracked as stretch-goal issues.
+walk-forward-evaluated baseline classifier, a backtest engine, and
+RandomForest hyperparameter tuning, wired up end-to-end through the CLI.
+A news-sentiment feature is tracked as a stretch-goal issue.
 
 ## Setup
 
@@ -90,7 +90,27 @@ Win rate:        xx.xx%
 Final equity:  xxxxx.xx
 ```
 
-Shared flags across `train`/`backtest`/`report`: `--horizon` (label
+**5. Compare RandomForest against the baseline**, with a small walk-forward
+grid search over `n_estimators`/`max_depth`:
+
+```bash
+python -m papertrader tune --ticker AAPL --n-estimators 100 200 --max-depth 0 5 10
+```
+
+```
+ n_estimators  max_depth  mean_accuracy  mean_precision  mean_recall
+           200          5          0.55            0.53         0.58
+           ...
+
+LogisticRegression baseline mean accuracy: 0.52
+Best RandomForest mean accuracy:            0.55
+```
+
+`--max-depth 0` means unlimited depth. Each combination gets a fresh
+RandomForest per walk-forward fold — same no-lookahead evaluation `train`
+uses, just repeated across the grid.
+
+Shared flags across `train`/`backtest`/`report`/`tune`: `--horizon` (label
 lookahead in days, default 5), `--threshold` (forward-return cutoff for an
 up label, default 0.0), `--n-splits` (walk-forward fold count, default 5),
 `--db-path` (default `data/papertrader.sqlite`). `backtest`/`report` also

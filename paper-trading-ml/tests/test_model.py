@@ -6,7 +6,9 @@ import pytest
 from papertrader.labeling import walk_forward_splits
 from papertrader.model import (
     evaluate_walk_forward,
+    grid_search_walk_forward,
     prepare_dataset,
+    random_forest_factory,
     train_final_model,
     walk_forward_predictions,
 )
@@ -84,3 +86,33 @@ def test_walk_forward_predictions_leaves_skipped_folds_as_nan() -> None:
             assert fold_predictions.isna().all()
         else:
             assert fold_predictions.notna().all()
+
+
+def test_evaluate_walk_forward_accepts_an_alternative_model_factory() -> None:
+    features, labels = _separable_dataset(n=40)
+    results = evaluate_walk_forward(
+        features, labels, n_splits=4, model_factory=random_forest_factory
+    )
+
+    evaluated = results[~results["skipped"]]
+    assert len(evaluated) > 0
+    assert (evaluated["accuracy"] == 1.0).all()
+
+
+def test_grid_search_walk_forward_scores_every_combination_sorted_best_first() -> None:
+    features, labels = _separable_dataset(n=40)
+    grid = grid_search_walk_forward(
+        features,
+        labels,
+        random_forest_factory,
+        {"n_estimators": [10, 20], "max_depth": [2, None]},
+        n_splits=4,
+    )
+
+    assert len(grid) == 4  # every combination of the 2x2 grid
+    assert {"n_estimators", "max_depth", "mean_accuracy", "mean_precision", "mean_recall"} <= set(
+        grid.columns
+    )
+    # Trivially separable data -> every combination should score perfectly.
+    assert (grid["mean_accuracy"] == 1.0).all()
+    assert grid["mean_accuracy"].is_monotonic_decreasing
