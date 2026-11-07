@@ -86,3 +86,23 @@ def test_report_prints_summary_metrics(seeded_db: Path, capsys: pytest.CaptureFi
 def test_train_raises_a_clear_error_for_an_uncached_ticker(seeded_db: Path) -> None:
     with pytest.raises(ValueError, match="No cached data"):
         main(["train", "--ticker", "NOPE", "--db-path", str(seeded_db), "--n-splits", "3"])
+
+
+def test_tune_prints_grid_and_baseline_comparison(
+    seeded_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main(
+        [
+            "tune",
+            "--ticker", "TEST",
+            "--db-path", str(seeded_db),
+            "--n-splits", "3",
+            "--n-estimators", "10", "20",
+            "--max-depth", "0", "3",
+        ]
+    )
+    out = capsys.readouterr().out
+
+    assert "mean_accuracy" in out
+    assert "LogisticRegression baseline mean accuracy" in out
+    assert "Best RandomForest mean accuracy" in out
