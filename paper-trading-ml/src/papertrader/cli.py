@@ -12,7 +12,7 @@ from papertrader.backtest import compute_metrics, run_backtest
 from papertrader.data_fetch import fetch_and_store
 from papertrader.features import build_feature_matrix
 from papertrader.labeling import make_labels
-from papertrader.model import evaluate_walk_forward, walk_forward_predictions
+from papertrader.model import evaluate_walk_forward, grid_search_walk_forward, random_forest_factory, walk_forward_predictions
 from papertrader.storage import DEFAULT_DB_PATH, get_connection, read_ohlcv
 
 
@@ -52,6 +52,29 @@ def _train(args: argparse.Namespace) -> None:
         f"Mean precision: {evaluated['precision'].mean():.3f}  "
         f"Mean recall: {evaluated['recall'].mean():.3f}"
     )
+
+
+def _tune(args: argparse.Namespace) -> None:
+    close = _load_close(args.ticker, args.db_path)
+    features = build_feature_matrix(close)
+    labels = make_labels(close, horizon=args.horizon, threshold=args.threshold)
+
+    param_grid = {
+        "n_estimators": args.n_estimators,
+        "max_depth": [None if d == 0 else d for d in args.max_depth],
+    }
+    grid = grid_search_walk_forward(
+        features, labels, random_forest_factory, param_grid, n_splits=args.n_splits
+    )
+    print(grid.to_string(index=False))
+
+    baseline = evaluate_walk_forward(features, labels, n_splits=args.n_splits)
+    baseline_evaluated = baseline[~baseline["skipped"]]
+    baseline_accuracy = baseline_evaluated["accuracy"].mean() if len(baseline_evaluated) else float("nan")
+    best_accuracy = grid["mean_accuracy"].iloc[0] if len(grid) else float("nan")
+
+    print(f"\nLogisticRegression baseline mean accuracy: {baseline_accuracy:.3f}")
+    print(f"Best RandomForest mean accuracy:            {best_accuracy:.3f}")
 
 
 def _walk_forward_signal(args: argparse.Namespace) -> tuple[pd.Series, pd.Series]:
@@ -135,6 +158,22 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser = subparsers.add_parser("train", help="Walk-forward evaluate the baseline classifier")
     _add_model_args(train_parser)
     train_parser.set_defaults(func=_train)
+
+    tune_parser = subparsers.add_parser(
+        "tune", help="Grid-search RandomForest hyperparameters against the LogisticRegression baseline"
+    )
+    _add_model_args(tune_parser)
+    tune_parser.add_argument(
+        "--n-estimators", type=int, nargs="+", default=[100, 200], help="RandomForest tree counts to try"
+    )
+    tune_parser.add_argument(
+        "--max-depth",
+        type=int,
+        nargs="+",
+        default=[0, 5, 10],
+        help="RandomForest max depths to try (0 means unlimited)",
+    )
+    tune_parser.set_defaults(func=_tune)
 
     backtest_parser = subparsers.add_parser(
         "backtest", help="Simulate trading on walk-forward out-of-sample predictions"
