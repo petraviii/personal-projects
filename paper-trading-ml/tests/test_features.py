@@ -106,3 +106,16 @@ def test_build_feature_matrix_has_expected_columns_and_length() -> None:
     }
     assert set(result.columns) == expected_columns
     assert len(result) == len(close)
+
+
+def test_build_feature_matrix_adds_sentiment_column_when_given() -> None:
+    close = pd.Series([100.0 + i for i in range(10)])
+    sentiment = pd.Series({3: 0.5, 7: -1.0})  # sparse: only two of the ten days have news
+
+    result = build_feature_matrix(close, sentiment=sentiment)
+
+    assert "news_sentiment" in result.columns
+    assert result["news_sentiment"].loc[3] == 0.5
+    assert result["news_sentiment"].loc[7] == -1.0
+    # Days with no cached news are neutral (0.0), not NaN/dropped.
+    assert result["news_sentiment"].drop(index=[3, 7]).eq(0.0).all()
