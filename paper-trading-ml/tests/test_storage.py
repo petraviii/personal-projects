@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from papertrader.storage import get_connection, read_ohlcv, upsert_ohlcv
+from papertrader.storage import get_connection, read_ohlcv, read_sentiment, upsert_ohlcv, upsert_sentiment
 
 
 def _sample_bars() -> pd.DataFrame:
@@ -46,4 +46,22 @@ def test_upsert_is_idempotent_on_same_dates(tmp_path: Path) -> None:
 def test_read_missing_ticker_returns_empty(tmp_path: Path) -> None:
     conn = get_connection(tmp_path / "test.sqlite")
     result = read_ohlcv(conn, "NOPE")
+    assert result.empty
+
+
+def test_sentiment_upsert_then_read_round_trip(tmp_path: Path) -> None:
+    conn = get_connection(tmp_path / "test.sqlite")
+    sentiment = pd.Series([0.5, -1.0], index=pd.to_datetime(["2024-01-02", "2024-01-03"]))
+    rows_written = upsert_sentiment(conn, "TEST", sentiment)
+
+    assert rows_written == 2
+
+    result = read_sentiment(conn, "TEST")
+    assert list(result.index.strftime("%Y-%m-%d")) == ["2024-01-02", "2024-01-03"]
+    assert result.loc["2024-01-03"] == -1.0
+
+
+def test_read_sentiment_for_missing_ticker_returns_empty(tmp_path: Path) -> None:
+    conn = get_connection(tmp_path / "test.sqlite")
+    result = read_sentiment(conn, "NOPE")
     assert result.empty
