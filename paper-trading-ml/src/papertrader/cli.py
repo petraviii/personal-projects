@@ -9,10 +9,17 @@ from pathlib import Path
 import pandas as pd
 
 from papertrader.backtest import compute_metrics, run_backtest
+from papertrader.broker import build_client, submit_signal_order
 from papertrader.data_fetch import fetch_and_store
 from papertrader.features import build_feature_matrix
 from papertrader.labeling import make_labels
-from papertrader.model import evaluate_walk_forward, grid_search_walk_forward, random_forest_factory, walk_forward_predictions
+from papertrader.model import (
+    evaluate_walk_forward,
+    grid_search_walk_forward,
+    random_forest_factory,
+    train_final_model,
+    walk_forward_predictions,
+)
 from papertrader.news import fetch_and_store_sentiment
 from papertrader.storage import DEFAULT_DB_PATH, get_connection, read_ohlcv, read_sentiment
 
@@ -146,6 +153,29 @@ def _report(args: argparse.Namespace) -> None:
     print(f"Final equity:  {result['equity'].iloc[-1]:>8.2f}")
 
 
+def _trade(args: argparse.Namespace) -> None:
+    close = _load_close(args.ticker, args.db_path)
+    features = _build_features(args, close)
+    labels = make_labels(close, horizon=args.horizon, threshold=args.threshold)
+
+    model = train_final_model(features, labels)
+
+    latest_date = features.index[-1]
+    latest_features = features.iloc[[-1]]
+    if latest_features.isna().any().any():
+        raise ValueError(
+            f"Latest cached row for '{args.ticker}' ({latest_date.date()}) has missing indicator "
+            "values (not enough warmup history yet) -- can't compute today's signal."
+        )
+    signal = int(model.predict(latest_features)[0])
+
+    client = build_client()
+    result = submit_signal_order(client, args.ticker, signal)
+
+    print(f"Signal for {args.ticker} on {latest_date.date()}: {'long' if signal else 'flat'}")
+    print("No order submitted (already in the right position)." if result is None else result)
+
+
 def _add_model_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--ticker", required=True, help="e.g. AAPL")
     parser.add_argument("--horizon", type=int, default=5, help="label lookahead in days (default: 5)")
@@ -217,6 +247,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_model_args(report_parser)
     _add_backtest_args(report_parser)
     report_parser.set_defaults(func=_report)
+
+    trade_parser = subparsers.add_parser(
+        "trade", help="Submit today's model signal as a paper order via Alpaca"
+    )
+    _add_model_args(trade_parser)
+    trade_parser.set_defaults(func=_trade)
 
     return parser
 
