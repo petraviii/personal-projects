@@ -19,15 +19,18 @@ flowchart LR
     C --> D[labeling.py<br/>forward N-day return -> up/down]
     D --> E[model.py<br/>walk-forward train/predict]
     E --> F[backtest.py<br/>simulated portfolio + metrics]
-    F --> G[cli.py<br/>fetch / fetch-news / train / tune / backtest / report]
+    F --> G[cli.py<br/>fetch / fetch-news / train / tune / backtest / report / trade]
+    G -->|today's signal| H[broker.py<br/>Alpaca paper-trading API]
 ```
 
 ## Status
 
-The full roadmap is done: data fetch, feature engineering, labeling, a
-walk-forward-evaluated baseline classifier, a backtest engine, RandomForest
-hyperparameter tuning, and an optional news-sentiment feature — all wired
-up end-to-end through the CLI.
+The full original roadmap is done: data fetch, feature engineering,
+labeling, a walk-forward-evaluated baseline classifier, a backtest engine,
+RandomForest hyperparameter tuning, and an optional news-sentiment
+feature — all wired up end-to-end through the CLI. On top of that: a
+real Alpaca paper-trading integration (`trade`), with a live Streamlit
+dashboard tracked as a follow-up issue.
 
 ## Setup
 
@@ -132,12 +135,37 @@ Yahoo only exposes a short rolling window of recent headlines (not
 historical), so most days have none — those are filled with a neutral
 0.0 score rather than dropped.
 
-Shared flags across `train`/`backtest`/`report`/`tune`: `--horizon` (label
-lookahead in days, default 5), `--threshold` (forward-return cutoff for an
-up label, default 0.0), `--n-splits` (walk-forward fold count, default 5),
-`--db-path` (default `data/papertrader.sqlite`), `--use-sentiment`.
-`backtest`/`report` also take `--position-size`, `--commission-bps`, and
-`--initial-capital`.
+Shared flags across `train`/`backtest`/`report`/`tune`/`trade`: `--horizon`
+(label lookahead in days, default 5), `--threshold` (forward-return cutoff
+for an up label, default 0.0), `--n-splits` (walk-forward fold count,
+default 5), `--db-path` (default `data/papertrader.sqlite`),
+`--use-sentiment`. `backtest`/`report` also take `--position-size`,
+`--commission-bps`, and `--initial-capital`.
+
+## Paper trading (Alpaca)
+
+`trade` trains the final model on all historical data, predicts *today's*
+signal from the latest cached row, and submits it as a real paper order:
+
+```bash
+python -m papertrader trade --ticker AAPL
+```
+
+- **buy** (using all available buying power) if the signal is up and
+  there's no existing position.
+- **close** the position if the signal is down and one is currently held.
+- no order otherwise (already in the right position).
+
+**Setup:** create a free account at [alpaca.markets](https://alpaca.markets)
+and generate a **paper trading** API key pair, then export it:
+
+```bash
+export ALPACA_API_KEY_ID=your-key-id
+export ALPACA_SECRET_KEY=your-secret-key
+```
+
+Watch the resulting orders/positions/equity in Alpaca's own paper-trading
+dashboard, or via `papertrader`'s own dashboard below.
 
 ## Tests
 
