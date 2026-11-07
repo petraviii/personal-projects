@@ -29,8 +29,8 @@ The full original roadmap is done: data fetch, feature engineering,
 labeling, a walk-forward-evaluated baseline classifier, a backtest engine,
 RandomForest hyperparameter tuning, and an optional news-sentiment
 feature — all wired up end-to-end through the CLI. On top of that: a
-real Alpaca paper-trading integration (`trade`), with a live Streamlit
-dashboard tracked as a follow-up issue.
+real Alpaca paper-trading integration (`trade`) and a live Streamlit
+dashboard.
 
 ## Setup
 
@@ -166,6 +166,28 @@ export ALPACA_SECRET_KEY=your-secret-key
 
 Watch the resulting orders/positions/equity in Alpaca's own paper-trading
 dashboard, or via `papertrader`'s own dashboard below.
+
+## Dashboard
+
+A live, continuously-running local dashboard — not a one-shot report:
+
+```bash
+streamlit run src/papertrader/dashboard.py
+```
+
+Opens at `http://localhost:8501`. Pick a cached ticker and horizon/threshold/
+folds/commission in the sidebar to see, live:
+
+- Price chart with the long/flat signal overlaid.
+- Equity curve and drawdown.
+- Walk-forward fold accuracy.
+- Summary metrics (total return, CAGR, Sharpe, max drawdown, win rate).
+- A **live Alpaca paper account** section (cash/equity/buying power,
+  positions, recent orders) once `ALPACA_API_KEY_ID`/`ALPACA_SECRET_KEY`
+  are set, with a manual refresh button.
+
+Reads from `data/papertrader.sqlite` by default; override with the
+`PAPERTRADER_DB_PATH` env var.
 
 ## Tests
 
