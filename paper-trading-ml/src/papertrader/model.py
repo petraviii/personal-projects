@@ -56,6 +56,28 @@ def evaluate_walk_forward(
     return pd.DataFrame(rows)
 
 
+def walk_forward_predictions(
+    features: pd.DataFrame, labels: pd.Series, n_splits: int = 5
+) -> pd.Series:
+    """Out-of-sample predictions for each walk-forward test fold, stitched
+    into one series aligned to the prepared dataset's index — a lookahead-free
+    signal suitable for backtesting.
+
+    Rows in a skipped fold (training set with only one class) are left as
+    NaN rather than guessed.
+    """
+    X, y = prepare_dataset(features, labels)
+    predictions = pd.Series(index=X.index, dtype=float)
+    for train_idx, test_idx in walk_forward_splits(len(X), n_splits=n_splits):
+        y_train = y.iloc[train_idx]
+        if y_train.nunique() < 2:
+            continue
+        model = LogisticRegression(max_iter=1000)
+        model.fit(X.iloc[train_idx], y_train)
+        predictions.iloc[test_idx] = model.predict(X.iloc[test_idx])
+    return predictions
+
+
 def train_final_model(features: pd.DataFrame, labels: pd.Series) -> LogisticRegression:
     """Fit a LogisticRegression on the full aligned dataset (for downstream
     use, e.g. generating live signals in the backtest engine)."""
