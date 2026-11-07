@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from papertrader.cli import main
-from papertrader.storage import get_connection, upsert_ohlcv
+from papertrader.storage import get_connection, upsert_ohlcv, upsert_sentiment
 
 
 def _triangle_wave(n: int, period: int = 10, amplitude: float = 5.0, base: float = 100.0) -> list[float]:
@@ -106,3 +106,35 @@ def test_tune_prints_grid_and_baseline_comparison(
     assert "mean_accuracy" in out
     assert "LogisticRegression baseline mean accuracy" in out
     assert "Best RandomForest mean accuracy" in out
+
+
+def test_fetch_news_populates_sentiment_cache(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db_path = tmp_path / "news_cli_test.sqlite"
+    main(["fetch-news", "--tickers", "AAPL", "--db-path", str(db_path)])
+    out = capsys.readouterr().out
+
+    assert "AAPL" in out
+    assert "cached" in out
+
+
+def test_train_with_use_sentiment_includes_the_feature_without_crashing(
+    seeded_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = get_connection(seeded_db)
+    upsert_sentiment(conn, "TEST", pd.Series({pd.Timestamp("2023-03-01"): 0.8}))
+    conn.close()
+
+    main(
+        [
+            "train",
+            "--ticker", "TEST",
+            "--db-path", str(seeded_db),
+            "--n-splits", "3",
+            "--use-sentiment",
+        ]
+    )
+    out = capsys.readouterr().out
+
+    assert "Mean accuracy" in out

@@ -68,8 +68,14 @@ def rolling_volatility(close: pd.Series, window: int = 20) -> pd.Series:
     return daily_returns(close).rolling(window=window).std()
 
 
-def build_feature_matrix(close: pd.Series) -> pd.DataFrame:
-    """Combine all indicators into a single feature DataFrame indexed by date."""
+def build_feature_matrix(close: pd.Series, sentiment: pd.Series | None = None) -> pd.DataFrame:
+    """Combine all indicators into a single feature DataFrame indexed by date.
+
+    `sentiment` is an optional daily news-sentiment score (see news.py).
+    Yahoo only exposes a short rolling window of recent headlines, so most
+    historical days have none — those are filled with 0.0 (neutral) rather
+    than dropped, so the sparse feature doesn't wipe out the whole dataset.
+    """
     features = pd.DataFrame(index=close.index)
     features["sma_10"] = sma(close, 10)
     features["sma_50"] = sma(close, 50)
@@ -79,4 +85,6 @@ def build_feature_matrix(close: pd.Series) -> pd.DataFrame:
     features = features.join(macd(close))
     features["volatility_20"] = rolling_volatility(close, 20)
     features = features.join(lagged_returns(close, [1, 5, 10]))
+    if sentiment is not None:
+        features["news_sentiment"] = sentiment.reindex(close.index).fillna(0.0)
     return features

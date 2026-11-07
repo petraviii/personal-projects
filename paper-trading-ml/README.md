@@ -12,20 +12,22 @@ signals would have performed.
 
 ```mermaid
 flowchart LR
-    A[yfinance] -->|daily OHLCV| B[storage.py<br/>SQLite cache]
-    B --> C[features.py<br/>SMA / EMA / RSI / MACD / returns]
+    A[yfinance OHLCV] -->|daily bars| B[storage.py<br/>SQLite cache]
+    N[yfinance news] -->|headlines| S[news.py<br/>lexicon sentiment score]
+    S --> B
+    B --> C[features.py<br/>SMA / EMA / RSI / MACD / returns / sentiment]
     C --> D[labeling.py<br/>forward N-day return -> up/down]
     D --> E[model.py<br/>walk-forward train/predict]
     E --> F[backtest.py<br/>simulated portfolio + metrics]
-    F --> G[cli.py<br/>fetch / train / backtest / report]
+    F --> G[cli.py<br/>fetch / fetch-news / train / tune / backtest / report]
 ```
 
 ## Status
 
-Full pipeline is in place: data fetch, feature engineering, labeling, a
-walk-forward-evaluated baseline classifier, a backtest engine, and
-RandomForest hyperparameter tuning, wired up end-to-end through the CLI.
-A news-sentiment feature is tracked as a stretch-goal issue.
+The full roadmap is done: data fetch, feature engineering, labeling, a
+walk-forward-evaluated baseline classifier, a backtest engine, RandomForest
+hyperparameter tuning, and an optional news-sentiment feature — all wired
+up end-to-end through the CLI.
 
 ## Setup
 
@@ -110,11 +112,32 @@ Best RandomForest mean accuracy:            0.55
 RandomForest per walk-forward fold — same no-lookahead evaluation `train`
 uses, just repeated across the grid.
 
+**6. Optional news-sentiment feature.** Fetch and score recent headlines
+(a small hand-rolled bullish/bearish word-count lexicon, kept
+dependency-free like the indicators in `features.py`) into their own
+SQLite cache:
+
+```bash
+python -m papertrader fetch-news --tickers AAPL
+```
+
+Then add `--use-sentiment` to `train`/`tune`/`backtest`/`report` to join
+that score in as an extra feature column:
+
+```bash
+python -m papertrader train --ticker AAPL --use-sentiment
+```
+
+Yahoo only exposes a short rolling window of recent headlines (not
+historical), so most days have none — those are filled with a neutral
+0.0 score rather than dropped.
+
 Shared flags across `train`/`backtest`/`report`/`tune`: `--horizon` (label
 lookahead in days, default 5), `--threshold` (forward-return cutoff for an
 up label, default 0.0), `--n-splits` (walk-forward fold count, default 5),
-`--db-path` (default `data/papertrader.sqlite`). `backtest`/`report` also
-take `--position-size`, `--commission-bps`, and `--initial-capital`.
+`--db-path` (default `data/papertrader.sqlite`), `--use-sentiment`.
+`backtest`/`report` also take `--position-size`, `--commission-bps`, and
+`--initial-capital`.
 
 ## Tests
 

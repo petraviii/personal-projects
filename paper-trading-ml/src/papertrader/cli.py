@@ -13,7 +13,8 @@ from papertrader.data_fetch import fetch_and_store
 from papertrader.features import build_feature_matrix
 from papertrader.labeling import make_labels
 from papertrader.model import evaluate_walk_forward, grid_search_walk_forward, random_forest_factory, walk_forward_predictions
-from papertrader.storage import DEFAULT_DB_PATH, get_connection, read_ohlcv
+from papertrader.news import fetch_and_store_sentiment
+from papertrader.storage import DEFAULT_DB_PATH, get_connection, read_ohlcv, read_sentiment
 
 
 def _load_close(ticker: str, db_path: Path) -> pd.Series:
@@ -27,6 +28,17 @@ def _load_close(ticker: str, db_path: Path) -> pd.Series:
     return bars["close"]
 
 
+def _build_features(args: argparse.Namespace, close: pd.Series) -> pd.DataFrame:
+    if not args.use_sentiment:
+        return build_feature_matrix(close)
+    conn = get_connection(args.db_path)
+    try:
+        sentiment = read_sentiment(conn, args.ticker)
+    finally:
+        conn.close()
+    return build_feature_matrix(close, sentiment=sentiment)
+
+
 def _fetch(args: argparse.Namespace) -> None:
     rows_written = fetch_and_store(
         tickers=args.tickers, start=args.start, end=args.end, db_path=args.db_path
@@ -35,9 +47,15 @@ def _fetch(args: argparse.Namespace) -> None:
         print(f"{ticker}: {count} rows cached")
 
 
+def _fetch_news(args: argparse.Namespace) -> None:
+    rows_written = fetch_and_store_sentiment(tickers=args.tickers, db_path=args.db_path)
+    for ticker, count in rows_written.items():
+        print(f"{ticker}: {count} days of sentiment cached")
+
+
 def _train(args: argparse.Namespace) -> None:
     close = _load_close(args.ticker, args.db_path)
-    features = build_feature_matrix(close)
+    features = _build_features(args, close)
     labels = make_labels(close, horizon=args.horizon, threshold=args.threshold)
 
     results = evaluate_walk_forward(features, labels, n_splits=args.n_splits)
@@ -56,7 +74,7 @@ def _train(args: argparse.Namespace) -> None:
 
 def _tune(args: argparse.Namespace) -> None:
     close = _load_close(args.ticker, args.db_path)
-    features = build_feature_matrix(close)
+    features = _build_features(args, close)
     labels = make_labels(close, horizon=args.horizon, threshold=args.threshold)
 
     param_grid = {
@@ -81,7 +99,7 @@ def _walk_forward_signal(args: argparse.Namespace) -> tuple[pd.Series, pd.Series
     """Shared by `backtest` and `report`: close prices plus a lookahead-free
     long/flat signal built from stitched walk-forward out-of-sample predictions."""
     close = _load_close(args.ticker, args.db_path)
-    features = build_feature_matrix(close)
+    features = _build_features(args, close)
     labels = make_labels(close, horizon=args.horizon, threshold=args.threshold)
 
     predictions = walk_forward_predictions(features, labels, n_splits=args.n_splits)
@@ -136,6 +154,11 @@ def _add_model_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--n-splits", type=int, default=5, help="walk-forward fold count (default: 5)")
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    parser.add_argument(
+        "--use-sentiment",
+        action="store_true",
+        help="add the cached news-sentiment feature (run `fetch-news` first)",
+    )
 
 
 def _add_backtest_args(parser: argparse.ArgumentParser) -> None:
@@ -154,6 +177,13 @@ def build_parser() -> argparse.ArgumentParser:
     fetch_parser.add_argument("--end", default=None, help="YYYY-MM-DD (default: today)")
     fetch_parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     fetch_parser.set_defaults(func=_fetch)
+
+    fetch_news_parser = subparsers.add_parser(
+        "fetch-news", help="Fetch and score recent headlines into the news-sentiment cache"
+    )
+    fetch_news_parser.add_argument("--tickers", nargs="+", required=True, help="e.g. AAPL MSFT")
+    fetch_news_parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    fetch_news_parser.set_defaults(func=_fetch_news)
 
     train_parser = subparsers.add_parser("train", help="Walk-forward evaluate the baseline classifier")
     _add_model_args(train_parser)
