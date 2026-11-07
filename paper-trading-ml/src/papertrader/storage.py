@@ -77,6 +77,12 @@ def read_ohlcv(conn: sqlite3.Connection, ticker: str) -> pd.DataFrame:
     return df.set_index("date")
 
 
+def list_tickers(conn: sqlite3.Connection) -> list[str]:
+    """Every ticker with at least one cached OHLCV row, alphabetically."""
+    rows = conn.execute("SELECT DISTINCT ticker FROM ohlcv ORDER BY ticker ASC").fetchall()
+    return [row[0] for row in rows]
+
+
 def upsert_sentiment(conn: sqlite3.Connection, ticker: str, daily_sentiment: pd.Series) -> int:
     """Insert or replace one average sentiment score per day for `ticker`.
     `daily_sentiment` is indexed by date."""
