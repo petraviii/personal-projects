@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from papertrader.storage import get_connection, read_ohlcv, read_sentiment, upsert_ohlcv, upsert_sentiment
+from papertrader.storage import (
+    get_connection,
+    list_tickers,
+    read_ohlcv,
+    read_sentiment,
+    upsert_ohlcv,
+    upsert_sentiment,
+)
 
 
 def _sample_bars() -> pd.DataFrame:
@@ -47,6 +54,20 @@ def test_read_missing_ticker_returns_empty(tmp_path: Path) -> None:
     conn = get_connection(tmp_path / "test.sqlite")
     result = read_ohlcv(conn, "NOPE")
     assert result.empty
+
+
+def test_list_tickers_returns_distinct_tickers_sorted(tmp_path: Path) -> None:
+    conn = get_connection(tmp_path / "test.sqlite")
+    upsert_ohlcv(conn, "MSFT", _sample_bars())
+    upsert_ohlcv(conn, "AAPL", _sample_bars())
+    upsert_ohlcv(conn, "AAPL", _sample_bars())  # re-upsert shouldn't duplicate the ticker
+
+    assert list_tickers(conn) == ["AAPL", "MSFT"]
+
+
+def test_list_tickers_is_empty_for_a_fresh_db(tmp_path: Path) -> None:
+    conn = get_connection(tmp_path / "test.sqlite")
+    assert list_tickers(conn) == []
 
 
 def test_sentiment_upsert_then_read_round_trip(tmp_path: Path) -> None:
