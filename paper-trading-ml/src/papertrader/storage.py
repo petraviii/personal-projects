@@ -20,13 +20,20 @@ CREATE TABLE IF NOT EXISTS ohlcv (
     volume INTEGER NOT NULL,
     PRIMARY KEY (ticker, date)
 );
+
+CREATE TABLE IF NOT EXISTS news_sentiment (
+    ticker TEXT NOT NULL,
+    date TEXT NOT NULL,
+    sentiment REAL NOT NULL,
+    PRIMARY KEY (ticker, date)
+);
 """
 
 
 def get_connection(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
-    conn.execute(_SCHEMA)
+    conn.executescript(_SCHEMA)
     conn.commit()
     return conn
 
@@ -68,3 +75,26 @@ def read_ohlcv(conn: sqlite3.Connection, ticker: str) -> pd.DataFrame:
         parse_dates=["date"],
     )
     return df.set_index("date")
+
+
+def upsert_sentiment(conn: sqlite3.Connection, ticker: str, daily_sentiment: pd.Series) -> int:
+    """Insert or replace one average sentiment score per day for `ticker`.
+    `daily_sentiment` is indexed by date."""
+    rows = [(ticker, index.strftime("%Y-%m-%d"), float(score)) for index, score in daily_sentiment.items()]
+    conn.executemany(
+        "INSERT OR REPLACE INTO news_sentiment (ticker, date, sentiment) VALUES (?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def read_sentiment(conn: sqlite3.Connection, ticker: str) -> pd.Series:
+    """Return cached daily sentiment for `ticker`, indexed by date and sorted ascending."""
+    df = pd.read_sql_query(
+        "SELECT date, sentiment FROM news_sentiment WHERE ticker = ? ORDER BY date ASC",
+        conn,
+        params=(ticker,),
+        parse_dates=["date"],
+    )
+    return df.set_index("date")["sentiment"]
