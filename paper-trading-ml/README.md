@@ -19,7 +19,7 @@ flowchart LR
     C --> D[labeling.py<br/>forward N-day return -> up/down]
     D --> E[model.py<br/>walk-forward train/predict]
     E --> F[backtest.py<br/>simulated portfolio + metrics]
-    F --> G[cli.py<br/>fetch / fetch-news / train / tune / backtest / report / trade]
+    F --> G[cli.py<br/>fetch / fetch-news / train / tune / backtest / report / trade / run-daily]
     G -->|today's signal| H[broker.py<br/>Alpaca paper-trading API]
 ```
 
@@ -29,8 +29,8 @@ The full original roadmap is done: data fetch, feature engineering,
 labeling, a walk-forward-evaluated baseline classifier, a backtest engine,
 RandomForest hyperparameter tuning, and an optional news-sentiment
 feature — all wired up end-to-end through the CLI. On top of that: a
-real Alpaca paper-trading integration (`trade`) and a live Streamlit
-dashboard.
+real Alpaca paper-trading integration (`trade`), a live Streamlit
+dashboard, and a cron-driven `run-daily` command for unattended trading.
 
 ## Setup
 
@@ -166,6 +166,28 @@ export ALPACA_SECRET_KEY=your-secret-key
 
 Watch the resulting orders/positions/equity in Alpaca's own paper-trading
 dashboard, or via `papertrader`'s own dashboard below.
+
+### Automated daily trading (cron)
+
+`run-daily` is a single CLI call meant to be driven by cron: it fetches
+fresh data and submits today's signal for each ticker you pass, with no
+separate wrapper script. It skips a ticker cleanly if the market was
+closed (no new cached row for today), and isolates failures per-ticker so
+one bad ticker doesn't stop the rest of an unattended run:
+
+```bash
+python -m papertrader run-daily --tickers AAPL MSFT
+```
+
+Example crontab entry (weekdays at 8pm local time, logging to a file):
+
+```
+0 20 * * 1-5 cd /path/to/paper-trading-ml && .venv/bin/papertrader run-daily --tickers AAPL MSFT >> logs/daily_trade.log 2>&1
+```
+
+Moving this scheduling off a laptop (e.g. onto an always-on machine) is a
+separate future step, not covered here — `run-daily` itself is already
+host-independent.
 
 ## Dashboard
 

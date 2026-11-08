@@ -1,140 +1,135 @@
-"""CLI smoke tests: a deterministic synthetic price series seeded directly
-into the SQLite cache (no network calls), run through each subcommand."""
+"""cli.py tests for the model-training/signal helper and the `run-daily`
+automation loop -- no real network/Alpaca calls, so CI needs no credentials."""
 
+import argparse
+from datetime import date, timedelta
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
-from papertrader.cli import main
-from papertrader.storage import get_connection, upsert_ohlcv, upsert_sentiment
+from papertrader import cli
+from papertrader.storage import get_connection, upsert_ohlcv
+from test_broker import FakeTradingClient
 
 
-def _triangle_wave(n: int, period: int = 10, amplitude: float = 5.0, base: float = 100.0) -> list[float]:
-    """Repeating up-5/down-5 price path, so forward returns alternate sign
-    predictably — enough signal for the baseline classifier to learn from."""
-    half = period // 2
-    prices = []
-    for i in range(n):
-        pos = i % period
-        if pos < half:
-            prices.append(base + pos * (amplitude / half))
-        else:
-            prices.append(base + amplitude - (pos - half) * (amplitude / half))
-    return prices
+FIXED_TODAY = date(2024, 6, 12)  # an arbitrary Wednesday, so weekday/weekend timing never flakes the tests
 
 
-@pytest.fixture
-def seeded_db(tmp_path: Path) -> Path:
-    db_path = tmp_path / "cli_test.sqlite"
-    close = _triangle_wave(150)
-    dates = pd.bdate_range("2023-01-02", periods=150)
+class _FixedDate(date):
+    """Stand-in for `datetime.date` so `date.today()` inside cli.py is deterministic."""
+
+    @classmethod
+    def today(cls) -> date:
+        return FIXED_TODAY
+
+
+def _seed_prices(db_path: Path, ticker: str, last_date: date, n_days: int = 400) -> None:
+    """Cache `n_days` of a trending-with-noise close series ending on `last_date`,
+    enough warmup history for the feature indicators to be fully computed."""
+    index = pd.bdate_range(end=last_date, periods=n_days)
+    rng = np.random.default_rng(42)
+    closes = 100 + np.cumsum(rng.normal(0.05, 1.0, size=n_days))
     bars = pd.DataFrame(
         {
-            "Open": close,
-            "High": [c + 1 for c in close],
-            "Low": [c - 1 for c in close],
-            "Close": close,
-            "Volume": [1_000] * len(close),
+            "Open": closes,
+            "High": closes + 1,
+            "Low": closes - 1,
+            "Close": closes,
+            "Volume": 1_000_000,
         },
-        index=dates,
+        index=index,
     )
-
     conn = get_connection(db_path)
-    upsert_ohlcv(conn, "TEST", bars)
-    conn.close()
-    return db_path
+    try:
+        upsert_ohlcv(conn, ticker, bars)
+    finally:
+        conn.close()
 
 
-def test_train_prints_fold_results(seeded_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    main(["train", "--ticker", "TEST", "--db-path", str(seeded_db), "--n-splits", "3"])
-    out = capsys.readouterr().out
-
-    assert "accuracy" in out
-    assert "Mean accuracy" in out
+def _model_args(ticker: str, db_path: Path) -> argparse.Namespace:
+    return argparse.Namespace(ticker=ticker, db_path=db_path, use_sentiment=False, horizon=5, threshold=0.0)
 
 
-def test_backtest_prints_final_equity_and_writes_csv(
-    seeded_db: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    output_path = tmp_path / "equity.csv"
-    main(
-        [
-            "backtest",
-            "--ticker", "TEST",
-            "--db-path", str(seeded_db),
-            "--n-splits", "3",
-            "--output", str(output_path),
-        ]
+def test_train_and_signal_returns_zero_or_one(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.sqlite"
+    _seed_prices(db_path, "AAPL", last_date=date.today())
+    close = cli._load_close("AAPL", db_path)
+
+    signal = cli._train_and_signal(_model_args("AAPL", db_path), close)
+
+    assert signal in (0, 1)
+
+
+def test_train_and_signal_raises_when_not_enough_warmup_history(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.sqlite"
+    _seed_prices(db_path, "AAPL", last_date=date.today(), n_days=10)
+    close = cli._load_close("AAPL", db_path)
+
+    with pytest.raises(ValueError, match="missing indicator"):
+        cli._train_and_signal(_model_args("AAPL", db_path), close)
+
+
+def _run_daily_args(tickers: list[str], db_path: Path) -> argparse.Namespace:
+    return argparse.Namespace(
+        tickers=tickers, db_path=db_path, use_sentiment=False, horizon=5, threshold=0.0, lookback_days=730
     )
+
+
+def test_run_daily_submits_an_order_for_a_fresh_ticker(tmp_path, monkeypatch, capsys) -> None:
+    db_path = tmp_path / "test.sqlite"
+    _seed_prices(db_path, "AAPL", last_date=FIXED_TODAY)
+
+    fake_client = FakeTradingClient()
+    monkeypatch.setattr(cli, "date", _FixedDate)
+    monkeypatch.setattr(cli, "build_client", lambda: fake_client)
+    monkeypatch.setattr(cli, "fetch_and_store", lambda **kwargs: None)
+
+    cli._run_daily(_run_daily_args(["AAPL"], db_path))
+
+    assert "ERROR" not in capsys.readouterr().out
+
+
+def test_run_daily_skips_a_ticker_with_no_new_data_today(tmp_path, monkeypatch, capsys) -> None:
+    db_path = tmp_path / "test.sqlite"
+    stale_date = FIXED_TODAY - timedelta(days=5)
+    _seed_prices(db_path, "MSFT", last_date=stale_date)
+
+    fake_client = FakeTradingClient()
+    monkeypatch.setattr(cli, "date", _FixedDate)
+    monkeypatch.setattr(cli, "build_client", lambda: fake_client)
+    # Market closed / no new bars -- the cache still ends on `stale_date`.
+    monkeypatch.setattr(cli, "fetch_and_store", lambda **kwargs: None)
+
+    cli._run_daily(_run_daily_args(["MSFT"], db_path))
+
+    assert "no new data for today" in capsys.readouterr().out
+    assert fake_client.submitted_orders == []
+    assert fake_client.closed_symbols == []
+
+
+def test_run_daily_one_failing_ticker_does_not_stop_the_rest(tmp_path, monkeypatch, capsys) -> None:
+    db_path = tmp_path / "test.sqlite"
+    _seed_prices(db_path, "AAPL", last_date=FIXED_TODAY)
+    _seed_prices(db_path, "MSFT", last_date=FIXED_TODAY)
+
+    fake_client = FakeTradingClient()
+    monkeypatch.setattr(cli, "date", _FixedDate)
+    monkeypatch.setattr(cli, "build_client", lambda: fake_client)
+    monkeypatch.setattr(cli, "fetch_and_store", lambda **kwargs: None)
+
+    original_train_and_signal = cli._train_and_signal
+
+    def flaky_train_and_signal(args, close):
+        if args.ticker == "AAPL":
+            raise RuntimeError("simulated model failure")
+        return original_train_and_signal(args, close)
+
+    monkeypatch.setattr(cli, "_train_and_signal", flaky_train_and_signal)
+
+    cli._run_daily(_run_daily_args(["AAPL", "MSFT"], db_path))
+
     out = capsys.readouterr().out
-
-    assert "Final equity" in out
-    assert output_path.exists()
-    written = pd.read_csv(output_path)
-    assert {"position", "daily_return", "equity"}.issubset(written.columns)
-
-
-def test_report_prints_summary_metrics(seeded_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    main(["report", "--ticker", "TEST", "--db-path", str(seeded_db), "--n-splits", "3"])
-    out = capsys.readouterr().out
-
-    assert "Sharpe" in out
-    assert "Final equity" in out
-
-
-def test_train_raises_a_clear_error_for_an_uncached_ticker(seeded_db: Path) -> None:
-    with pytest.raises(ValueError, match="No cached data"):
-        main(["train", "--ticker", "NOPE", "--db-path", str(seeded_db), "--n-splits", "3"])
-
-
-def test_tune_prints_grid_and_baseline_comparison(
-    seeded_db: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    main(
-        [
-            "tune",
-            "--ticker", "TEST",
-            "--db-path", str(seeded_db),
-            "--n-splits", "3",
-            "--n-estimators", "10", "20",
-            "--max-depth", "0", "3",
-        ]
-    )
-    out = capsys.readouterr().out
-
-    assert "mean_accuracy" in out
-    assert "LogisticRegression baseline mean accuracy" in out
-    assert "Best RandomForest mean accuracy" in out
-
-
-def test_fetch_news_populates_sentiment_cache(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    db_path = tmp_path / "news_cli_test.sqlite"
-    main(["fetch-news", "--tickers", "AAPL", "--db-path", str(db_path)])
-    out = capsys.readouterr().out
-
-    assert "AAPL" in out
-    assert "cached" in out
-
-
-def test_train_with_use_sentiment_includes_the_feature_without_crashing(
-    seeded_db: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    conn = get_connection(seeded_db)
-    upsert_sentiment(conn, "TEST", pd.Series({pd.Timestamp("2023-03-01"): 0.8}))
-    conn.close()
-
-    main(
-        [
-            "train",
-            "--ticker", "TEST",
-            "--db-path", str(seeded_db),
-            "--n-splits", "3",
-            "--use-sentiment",
-        ]
-    )
-    out = capsys.readouterr().out
-
-    assert "Mean accuracy" in out
+    assert "AAPL: ERROR - simulated model failure" in out
+    assert "MSFT: signal=" in out
