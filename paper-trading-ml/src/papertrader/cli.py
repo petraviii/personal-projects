@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -153,13 +154,15 @@ def _report(args: argparse.Namespace) -> None:
     print(f"Final equity:  {result['equity'].iloc[-1]:>8.2f}")
 
 
-def _trade(args: argparse.Namespace) -> None:
-    close = _load_close(args.ticker, args.db_path)
+def _train_and_signal(args: argparse.Namespace, close: pd.Series) -> int:
+    """Train the final model on all cached history and return today's signal
+    (1=long, 0=flat) from the latest cached feature row."""
     features = _build_features(args, close)
-    labels = make_labels(close, horizon=args.horizon, threshold=args.threshold)
 
-    model = train_final_model(features, labels)
-
+    # Checked before training: with too little total history, an indicator
+    # like sma_50 is NaN for every row including the last one, and
+    # `train_final_model` would otherwise fail on an empty dropna'd dataset
+    # with a cryptic sklearn error instead of this actionable message.
     latest_date = features.index[-1]
     latest_features = features.iloc[[-1]]
     if latest_features.isna().any().any():
@@ -167,13 +170,58 @@ def _trade(args: argparse.Namespace) -> None:
             f"Latest cached row for '{args.ticker}' ({latest_date.date()}) has missing indicator "
             "values (not enough warmup history yet) -- can't compute today's signal."
         )
-    signal = int(model.predict(latest_features)[0])
+
+    labels = make_labels(close, horizon=args.horizon, threshold=args.threshold)
+    model = train_final_model(features, labels)
+    return int(model.predict(latest_features)[0])
+
+
+def _trade(args: argparse.Namespace) -> None:
+    close = _load_close(args.ticker, args.db_path)
+    signal = _train_and_signal(args, close)
 
     client = build_client()
     result = submit_signal_order(client, args.ticker, signal)
 
-    print(f"Signal for {args.ticker} on {latest_date.date()}: {'long' if signal else 'flat'}")
+    print(f"Signal for {args.ticker} on {close.index[-1].date()}: {'long' if signal else 'flat'}")
     print("No order submitted (already in the right position)." if result is None else result)
+
+
+def _run_daily(args: argparse.Namespace) -> None:
+    """Fetch fresh data and submit today's signal for each ticker, meant to be
+    called from cron. Skips a ticker cleanly if the market was closed (no new
+    cached row for today); isolates failures per-ticker so one bad ticker
+    doesn't stop the rest of an unattended run."""
+    today = date.today()
+    client = build_client()
+    for ticker in args.tickers:
+        try:
+            start = (today - timedelta(days=args.lookback_days)).isoformat()
+            fetch_and_store(tickers=[ticker], start=start, db_path=args.db_path)
+            if args.use_sentiment:
+                fetch_and_store_sentiment(tickers=[ticker], db_path=args.db_path)
+
+            close = _load_close(ticker, args.db_path)
+            latest_date = close.index[-1].date()
+            if latest_date != today:
+                print(f"{ticker}: no new data for today ({latest_date}), skipping")
+                continue
+
+            ticker_args = argparse.Namespace(
+                ticker=ticker,
+                db_path=args.db_path,
+                use_sentiment=args.use_sentiment,
+                horizon=args.horizon,
+                threshold=args.threshold,
+            )
+            signal = _train_and_signal(ticker_args, close)
+            result = submit_signal_order(client, ticker, signal)
+            print(
+                f"{ticker}: signal={'long' if signal else 'flat'} on {latest_date} -> "
+                f"{result if result else 'no order (already correct position)'}"
+            )
+        except Exception as exc:
+            print(f"{ticker}: ERROR - {exc}")
 
 
 def _add_model_args(parser: argparse.ArgumentParser) -> None:
@@ -253,6 +301,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_model_args(trade_parser)
     trade_parser.set_defaults(func=_trade)
+
+    run_daily_parser = subparsers.add_parser(
+        "run-daily",
+        help="Fetch fresh data and submit today's signal for one or more tickers (for cron)",
+    )
+    run_daily_parser.add_argument("--tickers", nargs="+", required=True, help="e.g. AAPL MSFT")
+    run_daily_parser.add_argument("--horizon", type=int, default=5, help="label lookahead in days (default: 5)")
+    run_daily_parser.add_argument(
+        "--threshold", type=float, default=0.0, help="forward-return cutoff for an up label (default: 0.0)"
+    )
+    run_daily_parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    run_daily_parser.add_argument(
+        "--use-sentiment",
+        action="store_true",
+        help="add the cached news-sentiment feature (run `fetch-news` first)",
+    )
+    run_daily_parser.add_argument(
+        "--lookback-days", type=int, default=730, help="days of history to keep cached per ticker (default: 730)"
+    )
+    run_daily_parser.set_defaults(func=_run_daily)
 
     return parser
 
