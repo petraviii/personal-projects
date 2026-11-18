@@ -9,3 +9,6 @@
 !/.gitignore
 !/.github/
 !/.github/**
+# macOS Finder metadata — never commit
+.DS_Store
+**/.DS_Store
